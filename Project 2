@@ -1,0 +1,185 @@
+from jupyter_dash import JupyterDash
+import dash_leaflet as dl
+from dash import dcc, html, Input, Output, dash_table as dt
+import plotly.express as px
+import pandas as pd
+import base64
+
+#### FIX ME #####
+# change animal_shelter and AnimalShelter to match your CRUD Python module file name and class name
+from AnimalShelter import AnimalShelter
+
+###########################
+# Data Manipulation / Model
+###########################
+# FIX ME update with your username and password and CRUD Python module name
+
+username = "aacuser1"
+password = "password"
+
+# Connect to database via CRUD Module
+db = AnimalShelter(username, password)
+
+# class read method must support return of list object and accept projection json input
+# sending the read method an empty document requests all documents be returned
+df = pd.DataFrame.from_records(db.read({}))
+
+# MongoDB v5+ is going to return the '_id' column and that is going to have an 
+# invlaid object type of 'ObjectID' - which will cause the data_table to crash - so we remove
+# it in the dataframe here. The df.drop command allows us to drop the column. If we do not set
+# inplace=True - it will reeturn a new dataframe that does not contain the dropped column(s)
+
+if '_id' in df.columns:
+    df.drop(columns=['_id'],inplace=True)
+
+## Debug
+# print(len(df.to_dict(orient='records')))
+# print(df.columns)
+
+
+#########################
+# Dashboard Layout / View
+#########################
+app = JupyterDash(__name__)
+
+#FIX ME Add in Grazioso Salvare’s logo
+
+image_filename = 'dog.png'  # Update path as needed
+encoded_image = base64.b64encode(open(image_filename, 'rb').read())
+
+app.layout = html.Div([
+    html.A([
+        html.Center(html.Img(src='data:image/png;base64,{}'.format(encoded_image.decode()), 
+               height = 350, width = 351))], href = 'https://www.snhu.edu', target = "_blank"),
+    html.Center(html.B(html.H1('SNHU CS-340 Client/Server Development'))),
+    html.Center(html.B(html.H1('Project 2 Dashboard: Tabitha Sullivan'))),
+    #create the radio buttons to act as a filter
+    #set the default on initial load to to 'All'
+    
+    dcc.RadioItems(
+        id='filter-type',
+        options=[
+            {'label': 'Water Rescue', 'value': 'water'},
+            {'label': 'Mountain/Wilderness Rescue', 'value': 'mount'},
+            {'label': 'Disaster Rescue and Individual Tracking', 'value': 'disaster'},
+            {'label': 'Reset', 'value': 'reset'}
+        ],
+        value='reset',
+        style={'textAlign': 'center'}
+    ),
+    html.Hr(),
+    dt.DataTable(
+        id='datatable-id',
+        columns=[{"name": i, "id": i, "deletable": False, "selectable": True} for i in df.columns],
+        data=df.to_dict('records'),
+        page_size=10,
+        filter_action='native',
+        sort_action='native',
+        column_selectable='single',
+        row_selectable='single',
+        selected_columns=[],
+        selected_rows=[],
+        style_table={'height': '300px', 'overflowY': 'auto'},
+    ),
+    html.Div(className='row', style={'display': 'flex'}, children=[
+        html.Div(id='graph-id', className='col s12 m6'),
+        html.Div(id='map-id', className='col s12 m6')
+    ])
+])
+
+@app.callback(
+    [Output('datatable-id', 'data'),
+     Output('datatable-id', 'columns')],
+    [Input('filter-type', 'value')]
+)
+def update_dashboard(filter_type):
+    query = {}
+    if filter_type == 'water':
+        query = {
+            "animal_type": "Dog",
+            "breed": {"$in": ["Labrador Retriever Mix", "Chesapeake Bay Retriever", "Newfoundland"]},
+            "sex_upon_outcome": "Intact Female",
+            "age_upon_outcome_in_weeks": {"$gte": 26.0, "$lte": 156.0}
+        }
+    elif filter_type == 'mount':
+        query = {
+            "animal_type": "Dog",
+            "breed": {"$in": ["German Shepard", "Alaskan Malamute", "Old English Sheepdog", "Siberian Husky", "Rottweiler"]},
+            "sex_upon_outcome": "Intact Male",
+            "age_upon_outcome_in_weeks": {"$gte": 26.0, "$lte": 156.0}
+        }
+    elif filter_type == 'disaster':
+        query = {
+            "animal_type": "Dog",
+            "breed": {"$in": ["Doberman Pinscher", "German Shepard", "Golden Retriever", "Bloodhound", "Rottweiler"]},
+            "sex_upon_outcome": "Intact Male",
+            "age_upon_outcome_in_weeks": {"$gte": 20.0, "$lte": 300.0}
+        }
+    df_filtered = pd.DataFrame(list(db.read(query)))
+    if '_id' in df_filtered.columns:
+        df_filtered.drop(columns=['_id'], inplace=True)
+    return df_filtered.to_dict('records'), [{"name": i, "id": i, "deletable": False, "selectable": True} for i in df_filtered.columns]
+
+# Chart
+@app.callback(
+    Output('graph-id', "children"),
+    [Input('datatable-id', "derived_viewport_data"),
+     #Input('filter-type', 'value')
+    ])
+def update_graphs(viewData):
+    dff = pd.DataFrame.from_dict(viewData)
+    
+    return [
+        dcc.Graph(            
+#             figure = px.pie(dff, values='breed',  
+#                             title='Available Dogs by Breed')
+            figure = px.histogram(dff, x='breed')
+        )    
+    ]
+
+@app.callback(
+    Output('map-id', "children"),
+    [Input('datatable-id', "derived_virtual_data"),
+     Input('datatable-id', "derived_virtual_selected_rows")]
+)
+def update_map(viewData, selected_rows):
+    if not viewData:
+        # No data to display, return a default map centered on Austin, TX
+        return [dl.Map(style={'width': '1000px', 'height': '500px'}, center=[30.75, -97.48], zoom=10, children=[dl.TileLayer()])]
+    
+    dff = pd.DataFrame.from_dict(viewData)
+    
+    # Default to the first row if no row is selected
+    row = selected_rows[0] if selected_rows else 0
+
+    # Ensure the selected row is within the DataFrame's bounds
+    if row >= len(dff):
+        row = 0
+
+    # Fetch the latitude and longitude from the DataFrame
+    # Replace 'location_lat' and 'location_long' with your actual DataFrame's column names
+    latitude = dff.iloc[row]['location_lat']
+    longitude = dff.iloc[row]['location_long']
+
+    # Fetch additional data for the popup
+    animal_name = dff.iloc[row].get('name', 'No Name')
+    breed = dff.iloc[row].get('breed', 'No Breed')
+
+    return [
+        dl.Map(style={'width': '1000px', 'height': '500px'}, center=[latitude, longitude], zoom=10, children=[
+            dl.TileLayer(),
+            dl.Marker(position=[latitude, longitude], children=[
+                dl.Tooltip(breed),
+                dl.Popup([
+                    html.H1("Animal Name"),
+                    html.P(animal_name)
+                ])
+            ])
+        ])
+    ]
+
+# ... (rest of your code)
+
+# Run the server
+if __name__ == '__main__':
+    app.run_server(debug=True, port=31366)
